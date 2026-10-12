@@ -1,0 +1,13 @@
+{
+  "id": "quick-notes-pane",
+  "name": "Quick Notes",
+  "description": "One global scratchpad for quick notes, with markdown checkboxes, lists and headings. Saves as you type.",
+  "version": "1.2.2",
+  "manifestVersion": 1,
+  "minSupVersion": "14.0.0",
+  "permissions": ["showIndexHtmlAsView"],
+  "hooks": [],
+  "iFrame": true,
+  "isSkipMenuEntry": false,
+  "icon": "icon.svg"
+}

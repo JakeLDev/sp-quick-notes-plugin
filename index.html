@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Notes</title>
+<style>
+  :root { --bg: #fff; --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --err: #dc2626; --accent: #b45309; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1e1e1e; --fg: #e6e6e6; --muted: #9ca3af; --line: #333; --err: #f87171; --accent: #fbbf24; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 10px;
+    background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  #status { color: var(--muted); font-size: 12px; flex: 1; }
+  #status.error { color: var(--err); }
+  #help { color: var(--muted); font-size: 11px; }
+  code { font: 11px ui-monospace, Menlo, monospace; }
+  #editor { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; overflow: auto;
+    line-height: 1.6; overflow-wrap: anywhere; outline: none; }
+  #editor:focus { border-color: var(--muted); }
+  #editor[contenteditable="false"] { opacity: .6; }
+  #editor.empty::before { content: attr(data-placeholder); color: var(--muted); position: absolute; pointer-events: none; }
+  #editor p { margin: 0; }
+  #editor h2, #editor h3, #editor h4 { margin: 10px 0 2px; line-height: 1.3; }
+  #editor h2 { font-size: 20px; }
+  #editor h3 { font-size: 17px; }
+  #editor h4 { font-size: 15px; }
+  #editor > :first-child { margin-top: 0; }
+  #editor ul, #editor ol { margin: 0; padding-left: 24px; }
+  #editor ol ol { list-style-type: lower-alpha; }
+  #editor ol ol ol { list-style-type: lower-roman; }
+  #editor li.task { list-style: none; position: relative; padding-left: 22px; margin-left: -20px; }
+  #editor li.task::before { content: ""; position: absolute; left: 0; top: .3em; width: 13px; height: 13px;
+    border: 1.5px solid var(--muted); border-radius: 3px; cursor: pointer; }
+  #editor li.task.done::before { content: "✓"; background: var(--accent); border-color: var(--accent); color: var(--bg);
+    font: bold 11px/13px system-ui; text-align: center; }
+  #editor li.task.done { color: var(--muted); text-decoration: line-through; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quick Notes</h1>
+  <span id="status" role="status">Loading…</span>
+  <span id="help">Type <code>#</code> <code>-</code> <code>1.</code> <code>[]</code> then space. Tab nests. ⌘/Ctrl+Enter ticks.</span>
+</header>
+<div id="editor" contenteditable="false" role="textbox" aria-multiline="true" aria-label="Quick notes" spellcheck="true"
+  data-placeholder="Back from break: …"></div>
+<script>
+(function () {
+  // ponytail: contenteditable + execCommand. Chromium-only quirks are handled below.
+  // Move to a bundled editor (TipTap, Milkdown) if bold/links/tables are needed.
+  var editor = document.getElementById('editor');
+  var status = document.getElementById('status');
+  var timer = null;
+  var saved = '';
+
+  var HEADING = /^(#{1,3})\s+(.*)$/;
+  var ITEM = /^(\s*)([-*+]|\d+[.)])\s+(?:\[([ xX])\]\s?)?(.*)$/;
+  var BLOCKS = { P: 1, DIV: 1, H2: 1, H3: 1, H4: 1, UL: 1, OL: 1 };
+
+  function setStatus(text, isError) {
+    status.textContent = text;
+    status.className = isError ? 'error' : '';
+  }
+
+  function text(node) {
+    return node.textContent.replace(/\u00a0/g, ' ');
+  }
+
+  // ---- markdown -> DOM (textContent only, so note text never becomes HTML) ----
+  function render(md) {
+    editor.textContent = '';
+    var stack = [];
+    md.split('\n').forEach(function (line) {
+      var m = line.match(HEADING);
+      if (m) {
+        stack = [];
+        var h = document.createElement('h' + (m[1].length + 1));
+        h.textContent = m[2];
+        editor.appendChild(h);
+        return;
+      }
+      m = line.match(ITEM);
+      if (!m) {
+        stack = [];
+        var p = document.createElement('p');
+        if (line) p.textContent = line; else p.appendChild(document.createElement('br'));
+        editor.appendChild(p);
+        return;
+      }
+      var level = Math.floor(m[1].replace(/\t/g, '  ').length / 2);
+      var tag = /\d/.test(m[2]) ? 'OL' : 'UL';
+      while (stack.length && stack[stack.length - 1].level > level) stack.pop();
+      var top = stack[stack.length - 1];
+      if (top && top.level === level && top.el.tagName !== tag) { stack.pop(); top = stack[stack.length - 1]; }
+      if (!top || top.level < level) {
+        var list = document.createElement(tag);
+        if (tag === 'OL') list.start = parseInt(m[2], 10);
+        // Next to the parent <li>, not inside it, like Chromium's indent. A ticked parent then never strikes out its children.
+        (top ? top.el : editor).appendChild(list);
+        stack.push(top = { level: level, el: list });
+      }
+      var li = document.createElement('li');
+      if (m[4]) li.textContent = m[4]; else li.appendChild(document.createElement('br'));
+      if (m[3] !== undefined) li.className = m[3] === ' ' ? 'task' : 'task done';
+      top.el.appendChild(li);
+    });
+    if (!editor.firstChild) editor.innerHTML = '<p><br></p>';
+  }
+
+  // ---- DOM -> markdown ----
+  // Chromium nests an indented list as a sibling of the <li>, not inside it, so both shapes are read.
+  function listToMd(list, depth, out) {
+    var n = list.start || 1;
+    Array.prototype.forEach.call(list.children, function (child) {
+      if (child.tagName === 'UL' || child.tagName === 'OL') return listToMd(child, depth + 1, out);
+      if (child.tagName !== 'LI') return;
+      var own = '';
+      var nested = [];
+      child.childNodes.forEach(function (c) {
+        if (c.tagName === 'UL' || c.tagName === 'OL') nested.push(c); else own += text(c);
+      });
+      var box = child.classList.contains('task') ? (child.classList.contains('done') ? '[x] ' : '[ ] ') : '';
+      out.push('  '.repeat(depth) + (list.tagName === 'OL' ? (n++) + '.' : '-') + ' ' + box + own.replace(/\n/g, ' '));
+      nested.forEach(function (l) { listToMd(l, depth + 1, out); });
+    });
+  }
+
+  // Walks nested blocks too, because Chromium sometimes puts a block inside a <p> or <div>.
+  function blocksToMd(container, out) {
+    var buf = null;
+    container.childNodes.forEach(function (node) {
+      var tag = node.nodeType === 1 ? node.tagName : '';
+      if (!BLOCKS[tag]) {
+        if (tag === 'BR') { out.push(buf || ''); buf = null; } else buf = (buf || '') + text(node);
+        return;
+      }
+      if (buf !== null) { out.push(buf); buf = null; }
+      if (tag === 'UL' || tag === 'OL') listToMd(node, 0, out);
+      else if (tag[0] === 'H') out.push('#'.repeat(tag[1] - 1) + ' ' + text(node));
+      else if (node.querySelector('p,div,h2,h3,h4,ul,ol')) blocksToMd(node, out);
+      else out.push(text(node));
+    });
+    if (buf !== null) out.push(buf);
+  }
+
+  function toMarkdown() {
+    var out = [];
+    blocksToMd(editor, out);
+    return out.join('\n').replace(/\s+$/, '');
+  }
+
+  // ---- saving ----
+  async function save() {
+    clearTimeout(timer);
+    timer = null;
+    var md = toMarkdown();
+    if (md === saved) { setStatus('Saved'); return; }
+    try {
+      await PluginAPI.persistDataSynced(md);
+      saved = md;
+      if (!timer) setStatus('Saved');
+    } catch (e) {
+      setStatus('Not saved: ' + (e && e.message || e), true);
+    }
+  }
+
+  function changed() {
+    editor.classList.toggle('empty', !editor.textContent && !editor.querySelector('li,h2,h3,h4'));
+    setStatus('Editing…');
+    clearTimeout(timer);
+    timer = setTimeout(save, 500);
+  }
+
+  // ---- editing helpers ----
+  function caretBlock() {
+    var sel = getSelection();
+    if (!sel.rangeCount || !editor.contains(sel.anchorNode)) return null;
+    var el = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+    var block = el.closest('li,h2,h3,h4,p,div');
+    return block && block !== editor && editor.contains(block) ? block : null;
+  }
+
+  function textBeforeCaret(block) {
+    var sel = getSelection();
+    var r = document.createRange();
+    r.setStart(block, 0);
+    r.setEnd(sel.anchorNode, sel.anchorOffset);
+    return r.toString().replace(/\u00a0/g, ' ');
+  }
+
+  function deleteBeforeCaret(block) {
+    var sel = getSelection();
+    var r = document.createRange();
+    r.setStart(block, 0);
+    r.setEnd(sel.anchorNode, sel.anchorOffset);
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.execCommand('delete');
+  }
+
+  function toggleTask(li) {
+    li.classList.toggle('done');
+    changed();
+  }
+
+  // Markdown shortcuts: "# ", "- ", "1. ", "[] " or "- [ ] " at the start of a line.
+  editor.addEventListener('input', function (e) {
+    var block = caretBlock();
+    if (e.inputType === 'insertParagraph' && block) {
+      // Chromium copies the class of the split element. A new line is never ticked, and a plain line is never a task.
+      if (block.tagName === 'LI') block.classList.remove('done'); else block.removeAttribute('class');
+    }
+    changed();
+  });
+
+  // Built by hand: Chromium's insertUnorderedList nests the new list inside the old <p>.
+  function makeListItem(block, tag, number, mark) {
+    var prev = block.previousElementSibling;
+    var list = prev && prev.tagName === tag ? prev : document.createElement(tag);
+    if (list !== prev) {
+      if (number && number !== '1') list.start = parseInt(number, 10);
+      block.before(list);
+    }
+    var li = document.createElement('li');
+    while (block.firstChild) li.appendChild(block.firstChild);
+    if (!li.firstChild) li.appendChild(document.createElement('br'));
+    if (mark !== undefined) setTask(li, mark);
+    list.appendChild(li);
+    block.remove();
+    getSelection().collapse(li, 0);
+  }
+
+  function setTask(li, mark) {
+    li.className = /x/i.test(mark) ? 'task done' : 'task';
+  }
+
+  // Markdown shortcuts, run when space is typed: "#", "-", "1.", "[]" at the start of a line, "[ ]" at the start of an item.
+  // This runs on keydown because Chromium ignores editing commands sent from inside an input event.
+  function shortcut(block) {
+    var before = textBeforeCaret(block);
+    var m;
+    if (block.tagName === 'LI') {
+      // A list marker typed in an item that is already a list item is dropped, so "- [ ] " works there too.
+      if (!(m = before.match(/^(?:[-*+]|\d+[.)]|\[([ xX]?)\])$/))) return false;
+      deleteBeforeCaret(block);
+      if (m[1] !== undefined) setTask(block, m[1]);
+    } else if ((m = before.match(/^(#{1,3})$/))) {
+      deleteBeforeCaret(block);
+      document.execCommand('formatBlock', false, 'h' + (m[1].length + 1));
+    } else if ((m = before.match(/^(?:[-*+]|(\d+)[.)]|\[([ xX]?)\])$/))) {
+      deleteBeforeCaret(block);
+      makeListItem(block, m[1] ? 'OL' : 'UL', m[1], m[2]);
+    } else {
+      return false;
+    }
+    changed();
+    return true;
+  }
+
+  editor.addEventListener('keydown', function (e) {
+    var mod = e.metaKey || e.ctrlKey;
+    var block = caretBlock();
+    if (e.key === ' ' && !mod && getSelection().isCollapsed) {
+      if (!block) {
+        document.execCommand('formatBlock', false, 'p');
+        block = caretBlock();
+      }
+      if (block && shortcut(block)) e.preventDefault();
+    } else if (mod && /^[biu]$/i.test(e.key)) {
+      e.preventDefault(); // bold/italic/underline are not stored in markdown, so do not show them
+    } else if (mod && e.key === 'Enter') {
+      e.preventDefault();
+      if (block && block.classList.contains('task')) toggleTask(block);
+    } else if (e.key === 'Tab' && block && block.tagName === 'LI') {
+      e.preventDefault();
+      document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+    } else if (e.key === 'Backspace' && block && getSelection().isCollapsed && textBeforeCaret(block) === '') {
+      // Backspace at the start of a heading or task removes its format first, like most note apps.
+      if (block.classList.contains('task')) {
+        e.preventDefault();
+        block.classList.remove('task', 'done');
+        changed();
+      } else if (block.tagName[0] === 'H') {
+        e.preventDefault();
+        document.execCommand('formatBlock', false, 'p');
+      }
+    }
+  });
+
+  // Click on the box (the left padding of the task) ticks it, without moving the caret.
+  editor.addEventListener('mousedown', function (e) {
+    var li = e.target.closest && e.target.closest('li.task');
+    if (li && e.clientX < li.getBoundingClientRect().left + 20) {
+      e.preventDefault();
+      toggleTask(li);
+    }
+  });
+
+  editor.addEventListener('paste', function (e) {
+    e.preventDefault();
+    document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+  });
+  editor.addEventListener('drop', function (e) { e.preventDefault(); });
+
+  editor.addEventListener('blur', save);
+  window.addEventListener('pagehide', save);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+
+  (async function load() {
+    if (typeof PluginAPI === 'undefined' || typeof PluginAPI.loadSyncedData !== 'function') {
+      setStatus('PluginAPI is not available. Open this pane from Super Productivity.', true);
+      return;
+    }
+    try {
+      saved = (await PluginAPI.loadSyncedData()) || '';
+      render(saved);
+      document.execCommand('defaultParagraphSeparator', false, 'p');
+      // Editable only after load, so an empty editor can never overwrite saved notes.
+      editor.contentEditable = 'true';
+      editor.classList.toggle('empty', !saved);
+      editor.focus();
+      setStatus('Saved');
+    } catch (e) {
+      setStatus('Could not load notes: ' + (e && e.message || e), true);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

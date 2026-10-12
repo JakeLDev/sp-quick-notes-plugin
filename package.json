@@ -1,0 +1,12 @@
+{
+  "name": "sp-quick-notes-plugin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "zip": "rm -f quick-notes-plugin.zip && zip -q quick-notes-plugin.zip manifest.json plugin.js index.html icon.svg"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0"
+  }
+}
