@@ -13,7 +13,8 @@ A full-screen scratchpad for quick notes, such as what to do when you come back 
 - Tab and Shift+Tab nest and un-nest list items.
 - Click a box, or press `Cmd/Ctrl+Enter`, to tick it.
 - Backspace at the start of a heading or checkbox removes its format.
-- Paste is plain text. Bold, italic, links and code are not supported.
+- `http://` and `https://` URLs become links when you type space or Enter after them, or paste them. `Cmd/Ctrl+click` opens a link in your browser. A plain click only moves the caret, so you can edit the link.
+- Paste is plain text. Bold, italic, code and `[text](url)` links are not supported.
 - Notes are stored as markdown text, so old notes still load.
 
 ## Install

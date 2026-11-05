@@ -175,3 +175,66 @@ test('editor is locked until notes load', async () => {
   assert.deepEqual(await page.evaluate(() => window.saves), []);
   await page.close();
 });
+
+test('URLs load as links and save back as plain text', async () => {
+  const notes = '# See https://a.com/x?y=1\n- [ ] read (https://b.com/p).\nno javascript:alert(1) or ftp://c.com';
+  const page = await open(notes);
+  const links = await page.$$eval('#editor a', (as) => as.map((a) => [a.parentElement.tagName, a.textContent, a.href]));
+  assert.deepEqual(links, [['H2', 'https://a.com/x?y=1', 'https://a.com/x?y=1'], ['LI', 'https://b.com/p', 'https://b.com/p']]);
+  await page.click('#editor p');
+  await page.keyboard.press('End');
+  await page.keyboard.type('!');
+  assert.equal(await savedText(page), notes + '!');
+  await page.close();
+});
+
+test('a typed URL becomes a link once the word ends', async () => {
+  const page = await open();
+  await page.keyboard.type('go https://a.com/x.');
+  assert.equal(await page.$('#editor a'), null);
+  await page.keyboard.type(' now https://c.com then');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('- https://b.com');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('next');
+  const links = await page.$$eval('#editor a', (as) => as.map((a) => a.textContent));
+  assert.deepEqual(links, ['https://a.com/x', 'https://c.com', 'https://b.com']);
+  assert.equal(await savedText(page), 'go https://a.com/x. now https://c.com then\n- https://b.com\n- next');
+  await page.close();
+});
+
+test('a pasted URL becomes a link', async () => {
+  const page = await open();
+  await page.keyboard.type('link: ');
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'https://a.com');
+    document.getElementById('editor').dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await page.keyboard.type('!');
+  assert.deepEqual(await page.$$eval('#editor a', (as) => as.map((a) => a.textContent)), ['https://a.com']);
+  assert.equal(await savedText(page), 'link: https://a.com!');
+  await page.close();
+});
+
+test('Cmd/Ctrl+click opens a link, a plain click does not', async () => {
+  const page = await open('see https://a.com today');
+  await page.evaluate(() => { window.opened = []; window.open = (url) => { window.opened.push(url); }; });
+  await page.click('#editor a');
+  assert.deepEqual(await page.evaluate(() => window.opened), []);
+  await page.click('#editor a', { modifiers: ['ControlOrMeta'] });
+  assert.deepEqual(await page.evaluate(() => window.opened), ['https://a.com']);
+  await page.close();
+});
+
+test('undo still works after a URL becomes a link', async () => {
+  const page = await open();
+  await page.keyboard.type('a https://x.com b');
+  assert.equal(await page.$eval('#editor a', (a) => a.textContent), 'https://x.com');
+  // Headless Chromium undoes one typed key at a time. Making the link is one more step.
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ControlOrMeta+z');
+  assert.equal(await page.$('#editor a'), null);
+  await page.keyboard.press('ControlOrMeta+z');
+  assert.equal(await page.$eval('#editor', (e) => e.textContent), 'a https://x.co');
+  await page.close();
+});
